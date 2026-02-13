@@ -30,8 +30,15 @@ import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card.jsx'
 import { Button } from '@/components/ui/button.jsx'
 import { Badge } from '@/components/ui/badge.jsx'
-import { Calendar, BarChart3, Users, Settings, Download, Upload, RotateCcw, Database, Save, ChevronLeft, ChevronRight, File, Trash2, Pencil, HelpCircle, Plus } from 'lucide-react'
-import { HashRouter as Router, Routes, Route } from 'react-router-dom'
+import { Calendar, BarChart3, Users, Settings, Download, Upload, RotateCcw, Database, Save, ChevronLeft, ChevronRight, File, Trash2, Pencil, HelpCircle, Plus, LogOut, Share2 } from 'lucide-react'
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { AuthProvider, useAuth } from '@/contexts/AuthContext'
+import { PortfolioProvider, usePortfolio } from '@/contexts/PortfolioContext'
+import LoginPage from '@/pages/LoginPage'
+import RegisterPage from '@/pages/RegisterPage'
+import DashboardPage from '@/pages/DashboardPage'
+import PortfolioSelector from '@/components/PortfolioSelector'
+import ShareManager from '@/components/ShareManager'
 import fayeLogo from './assets/faye-logo-white.png'
 import ValueStreamSidebar from './components/ValueStreamSidebar.jsx'
 import GanttChart from './components/GanttChart.jsx'
@@ -153,16 +160,23 @@ function parseAsanaTasks(asanaJson, valueStreamId) {
 }
 
 function PortfolioView() {
+  const { isAuthenticated } = useAuth();
+  const portfolio = usePortfolio();
+  const { currentPortfolio, savePortfolioData, accessRole } = portfolio;
+
   // Load last scenario only once on mount
   const initialLoadRef = useRef(false);
   const lastScenarioName = loadLastScenarioName();
   const lastScenario = lastScenarioName ? loadScenario(lastScenarioName) : null;
 
+  // When authenticated, init state from portfolio data; else from localStorage
+  const initData = currentPortfolio?.data;
+
   // Scenario state
   const [scenarioName, setScenarioName] = useState(lastScenarioName || 'Default');
-  const [projects, setProjects] = useState(lastScenario?.projects || initialProjects);
-  const [valueStreams, setValueStreams] = useState(lastScenario?.valueStreams || initialValueStreams);
-  const [resourceTypes, setResourceTypes] = useState(lastScenario?.resourceTypes || initialResourceTypes);
+  const [projects, setProjects] = useState(initData?.projects ?? lastScenario?.projects ?? initialProjects);
+  const [valueStreams, setValueStreams] = useState(initData?.valueStreams ?? lastScenario?.valueStreams ?? initialValueStreams);
+  const [resourceTypes, setResourceTypes] = useState(initData?.resourceTypes ?? lastScenario?.resourceTypes ?? initialResourceTypes);
   const [selectedValueStream, setSelectedValueStream] = useState(null)
   const [currentView, setCurrentView] = useState('portfolio')
   const [isProjectFormOpen, setIsProjectFormOpen] = useState(false)
@@ -176,6 +190,7 @@ function PortfolioView() {
   const [showAsanaImport, setShowAsanaImport] = useState(false);
   const [asanaImportValueStream, setAsanaImportValueStream] = useState(valueStreams[0]?.id || '');
   const [contractHours, setContractHours] = useState(() => {
+    if (initData?.contractHours !== undefined) return initData.contractHours;
     const saved = localStorage.getItem('contractHours');
     return saved ? parseInt(saved, 10) : 0;
   });
@@ -184,19 +199,45 @@ function PortfolioView() {
   const [error, setError] = useState(null);
   const [selectedRange, setSelectedRange] = useState('currentQuarter');
   const [clientName, setClientName] = useState(() => {
+    if (currentPortfolio) return currentPortfolio.clientName || 'No Client Name';
     const savedData = localStorage.getItem('portfolioData');
     if (savedData) {
       try {
         const data = JSON.parse(savedData);
-        return data.clientName || 'Client Name';
-      } catch (e) {
-        return 'Client Name';
+        return data.clientName || 'No Client Name';
+      } catch {
+        return 'No Client Name';
       }
     }
-    return 'Client Name';
+    return 'No Client Name';
   });
   const [isEditingClient, setIsEditingClient] = useState(false);
   const [showFilesModal, setShowFilesModal] = useState(false);
+
+  // Sync state when portfolio changes (server-backed portfolios)
+  const portfolioIdRef = useRef(currentPortfolio?.id);
+  useEffect(() => {
+    if (currentPortfolio && currentPortfolio.id !== portfolioIdRef.current) {
+      portfolioIdRef.current = currentPortfolio.id;
+      const d = currentPortfolio.data || {};
+      setProjects(d.projects || []);
+      setValueStreams(d.valueStreams || []);
+      setResourceTypes(d.resourceTypes || []);
+      setContractHours(d.contractHours || 0);
+      setClientName(currentPortfolio.clientName || 'No Client Name');
+    }
+  }, [currentPortfolio]);
+
+  // Auto-save to API when data changes (debounced)
+  const saveTimerRef = useRef(null);
+  useEffect(() => {
+    if (!isAuthenticated || !currentPortfolio) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      savePortfolioData({ projects, valueStreams, resourceTypes, contractHours });
+    }, 1000);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [projects, valueStreams, resourceTypes, contractHours, isAuthenticated, currentPortfolio, savePortfolioData]);
 
   // Helper function to save data
   const saveData = (dataToSave = null) => {
@@ -257,62 +298,41 @@ function PortfolioView() {
     }
   };
 
-  // On first mount, ensure state is loaded from last scenario
+  // On first mount, load from localStorage only when NOT using a server-backed portfolio
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    try {
-      // Check if storage is available
-      const testKey = 'test_storage';
-      try {
-        console.log('Testing storage availability...');
-        localStorage.setItem(testKey, 'test');
-        localStorage.removeItem(testKey);
-        sessionStorage.setItem(testKey, 'test');
-        sessionStorage.removeItem(testKey);
-        console.log('Storage is available');
-      } catch (e) {
-        console.error('Storage is not available:', e);
-        alert('Warning: Your browser settings are preventing data from being saved. Please check your privacy settings and allow storage for this site.');
-        return;
-      }
+    if (isAuthenticated && currentPortfolio) return; // Server data already loaded via initData
 
-      // Load data using the helper function
+    try {
       const data = loadData();
-      
       if (data) {
-        console.log('Loading saved data:', {
-          projects: data.projects.length,
-          valueStreams: data.valueStreams.length,
-          resourceTypes: data.resourceTypes.length
-        });
-        
-        setProjects(data.projects);
-        setValueStreams(data.valueStreams);
-        setResourceTypes(data.resourceTypes);
-        console.log('State updated with saved data');
+        setProjects(data.projects ?? []);
+        setValueStreams(data.valueStreams ?? []);
+        setResourceTypes(data.resourceTypes ?? []);
       } else {
-        console.log('No saved data found, using demo data');
         setProjects(initialProjects);
         setValueStreams(initialValueStreams);
         setResourceTypes(initialResourceTypes);
       }
-    } catch (error) {
-      console.error('Error loading saved data:', error);
+    } catch {
       setProjects(initialProjects);
       setValueStreams(initialValueStreams);
       setResourceTypes(initialResourceTypes);
     }
   }, []);
 
-  // Save scenario on change
+  // Save scenario on change — only when not using server-backed portfolio
   useEffect(() => {
+    if (isAuthenticated && currentPortfolio) return;
     saveScenario(scenarioName, { projects, valueStreams, resourceTypes });
     saveLastScenarioName(scenarioName);
-  }, [projects, valueStreams, resourceTypes, scenarioName]);
+  }, [projects, valueStreams, resourceTypes, scenarioName, isAuthenticated, currentPortfolio]);
 
-  // Save contract hours when changed
+  // Save contract hours when changed — only when not using server-backed portfolio
   useEffect(() => {
+    if (isAuthenticated && currentPortfolio) return;
     localStorage.setItem('contractHours', contractHours.toString());
-  }, [contractHours]);
+  }, [contractHours, isAuthenticated, currentPortfolio]);
 
   // Handle sidebar resize
   const handleMouseDown = (e) => {
@@ -802,7 +822,14 @@ function PortfolioView() {
         <div className="px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <img src={fayeLogo} alt="Faye Logo" className="h-8" />
+              <img
+                src={fayeLogo}
+                alt="Faye Logo"
+                className="h-8 cursor-pointer"
+                onClick={() => { if (isAuthenticated) portfolio.exitPortfolio(); }}
+                title="Back to Dashboard"
+              />
+              {isAuthenticated && <PortfolioSelector />}
               <div className="flex flex-col">
                 <span className="text-sm text-purple-200">Portfolio Planner, prepared for</span>
                 <div className="flex items-center space-x-2">
@@ -929,6 +956,23 @@ function PortfolioView() {
                   />
                 </DialogContent>
               </Dialog>
+              {isAuthenticated && accessRole === 'owner' && (
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <Button variant="ghost" className="text-white hover:text-purple-200">
+                      <Share2 className="h-4 w-4 sm:mr-2" />
+                      <span className="hidden sm:inline">Share</span>
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Share Portfolio</DialogTitle>
+                    </DialogHeader>
+                    <ShareManager />
+                  </DialogContent>
+                </Dialog>
+              )}
+              <LogoutButton />
             </div>
           </div>
         </div>
@@ -1238,12 +1282,67 @@ function PortfolioView() {
   )
 }
 
+function LogoutButton() {
+  const { isAuthenticated, logout, user } = useAuth();
+  if (!isAuthenticated) return null;
+
+  return (
+    <Button
+      variant="ghost"
+      onClick={logout}
+      className="text-white hover:text-purple-200"
+      title={user?.email}
+    >
+      <LogOut className="h-4 w-4 sm:mr-2" />
+      <span className="hidden sm:inline">Logout</span>
+    </Button>
+  );
+}
+
+function ProtectedRoute({ children }) {
+  const { isAuthenticated, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <p className="text-gray-500">Loading...</p>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+}
+
+function AuthenticatedApp() {
+  const { currentPortfolio } = usePortfolio();
+
+  if (!currentPortfolio) {
+    return <DashboardPage />;
+  }
+
+  return <PortfolioView />;
+}
+
 export default function App() {
   return (
     <Router>
-      <Routes>
-        <Route path="/" element={<PortfolioView />} />
-      </Routes>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/*" element={
+            <ProtectedRoute>
+              <PortfolioProvider>
+                <AuthenticatedApp />
+              </PortfolioProvider>
+            </ProtectedRoute>
+          } />
+        </Routes>
+      </AuthProvider>
     </Router>
   );
 }
