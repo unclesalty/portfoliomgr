@@ -27,11 +27,12 @@ export default defineConfig({
     strictPort: true,
     host: true,
     open: true,
-    historyApiFallback: {
-      rewrites: [
-        { from: /^\//, to: '/index.html' }
-      ]
-    }
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     rollupOptions: {

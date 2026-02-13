@@ -27,5 +27,10 @@ yarn-error.log*
 *.swp
 *.swo 
 
+# SQLite database storage
+/data
+
 # planning/dev
 /docs
+CLAUDE.md
+PROMPT.md
