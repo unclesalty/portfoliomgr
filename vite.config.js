@@ -21,12 +21,13 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-  base: process.env.NODE_ENV === 'production' ? '/portfoliomgr/' : '/',
+  base: process.env.GITHUB_PAGES === 'true' ? '/portfoliomgr/' : '/',
   server: {
     port: 5173,
     strictPort: true,
     host: true,
     open: true,
+    allowedHosts: ['portman.busybeswicks.com'],
     proxy: {
       '/api': {
         target: 'http://localhost:3000',
