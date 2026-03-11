@@ -1,0 +1,17 @@
+services:
+  portfolio-manager:
+    build: .
+    container_name: portfolio-manager
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persist SQLite database outside the container
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_PATH=/app/data/portfolio.db
+      # IMPORTANT: Set a secure JWT_SECRET in production
+      # You can set this in a .env file or pass it directly
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
